@@ -1,0 +1,29 @@
+{
+  "name": "member-credits",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:server": "node server/index.mjs",
+    "build": "tsc -b && vite build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "express-session": "latest",
+    "googleapis": "latest",
+    "vite": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "prettier": "latest",
+    "typescript": "latest"
+  }
+}
