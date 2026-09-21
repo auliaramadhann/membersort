@@ -25,6 +25,8 @@ constexpr uint32_t kCanvasWidth = 1920;
 constexpr uint32_t kCanvasHeight = 1080;
 constexpr int kDefaultFontSize = 34;
 constexpr int kDefaultRollDuration = 45;
+constexpr int kTickerPadding = 72;
+constexpr int kTickerHeight = 112;
 constexpr const char *kAuthUrl = "http://localhost:8787/auth/google";
 
 struct text_line {
@@ -54,6 +56,8 @@ struct member_credits_data {
         "YukiTan";
     std::string roster_file;
     std::string font_path;
+    std::string layout_mode = "credit-roll";
+    std::string text_align = "center";
     int font_size = kDefaultFontSize;
     int speed = kDefaultRollDuration;
     uint32_t accent = 0xFF91A88B;
@@ -65,6 +69,8 @@ struct member_credits_data {
     bool dirty = true;
     float elapsed = 0.0f;
     float scroll_y = static_cast<float>(kCanvasHeight);
+    float scroll_x = static_cast<float>(kCanvasWidth);
+    uint32_t content_width = kCanvasWidth;
     uint32_t content_height = kCanvasHeight;
     std::vector<uint8_t> pixels;
     gs_texture_t *texture = nullptr;
@@ -83,7 +89,13 @@ void reset_animation(member_credits_data *credits, bool autoplay)
 
     credits->elapsed = 0.0f;
     credits->scroll_y = static_cast<float>(kCanvasHeight);
+    credits->scroll_x = static_cast<float>(kCanvasWidth);
     credits->playing = autoplay;
+}
+
+bool is_ticker(const member_credits_data *credits)
+{
+    return credits && credits->layout_mode == "bottom-ticker";
 }
 
 const char *member_credits_get_name(void *)
@@ -155,12 +167,12 @@ uint32_t next_codepoint(std::string_view text, size_t &index)
 
 void set_pixel(member_credits_data *credits, int x, int y, uint32_t color, uint8_t alpha)
 {
-    if (x < 0 || y < 0 || x >= static_cast<int>(kCanvasWidth) ||
+    if (x < 0 || y < 0 || x >= static_cast<int>(credits->content_width) ||
         y >= static_cast<int>(credits->content_height) || alpha == 0) {
         return;
     }
 
-    const size_t index = (static_cast<size_t>(y) * kCanvasWidth + x) * 4;
+    const size_t index = (static_cast<size_t>(y) * credits->content_width + x) * 4;
     const uint32_t source_alpha = alpha;
     const uint32_t destination_alpha = credits->pixels[index + 3];
     const uint32_t output_alpha = source_alpha +
@@ -205,7 +217,13 @@ void draw_text(member_credits_data *credits, const text_line &line, int baseline
 
     FT_Set_Pixel_Sizes(credits->face, 0, static_cast<FT_UInt>(line.size));
     const int width = measure_text(credits->face, line.value);
-    int cursor_x = static_cast<int>((kCanvasWidth - width) / 2);
+    const int margin = is_ticker(credits) ? kTickerPadding : 80;
+    int cursor_x = margin;
+    if (credits->text_align == "right")
+        cursor_x = static_cast<int>(credits->content_width) - margin - width;
+    else if (credits->text_align == "center")
+        cursor_x = (static_cast<int>(credits->content_width) - width) / 2;
+    cursor_x = std::max(cursor_x, 0);
 
     size_t index = 0;
     while (index < line.value.size()) {
@@ -368,6 +386,34 @@ std::vector<text_line> make_lines(const member_credits_data *credits)
     return lines;
 }
 
+std::string make_ticker_text(const member_credits_data *credits)
+{
+    std::string ticker;
+    size_t start = 0;
+    while (start <= credits->members.size()) {
+        const size_t end = credits->members.find('\n', start);
+        const size_t length = end == std::string::npos ? std::string::npos : end - start;
+        std::string line = credits->members.substr(start, length);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+            line.pop_back();
+        const size_t first = line.find_first_not_of(" \t");
+        if (first != std::string::npos)
+            line.erase(0, first);
+
+        const bool tier_heading = line.size() >= 2 && line.front() == '[' && line.back() == ']';
+        if (!line.empty() && !tier_heading) {
+            if (!ticker.empty())
+                ticker += "  |  ";
+            ticker += line;
+        }
+
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    return ticker;
+}
+
 void rebuild_pixels(member_credits_data *credits)
 {
     if (!credits->face)
@@ -375,6 +421,42 @@ void rebuild_pixels(member_credits_data *credits)
     if (!credits->face)
         return;
 
+    if (is_ticker(credits)) {
+        const std::string ticker = make_ticker_text(credits);
+        FT_Set_Pixel_Sizes(credits->face, 0, static_cast<FT_UInt>(credits->font_size));
+        const int ticker_width = measure_text(credits->face, ticker);
+        credits->content_width = std::max(
+            kCanvasWidth,
+            static_cast<uint32_t>(ticker_width + kTickerPadding * 2)
+        );
+        credits->content_height = std::max(
+            static_cast<uint32_t>(kTickerHeight),
+            static_cast<uint32_t>(credits->font_size + 48)
+        );
+        credits->pixels.assign(
+            static_cast<size_t>(credits->content_width) * credits->content_height * 4,
+            0
+        );
+
+        if (!credits->transparent_background) {
+            for (size_t index = 0; index < credits->pixels.size(); index += 4) {
+                credits->pixels[index] = static_cast<uint8_t>(channel(credits->background, 16));
+                credits->pixels[index + 1] = static_cast<uint8_t>(channel(credits->background, 8));
+                credits->pixels[index + 2] = static_cast<uint8_t>(channel(credits->background, 0));
+                credits->pixels[index + 3] = 255;
+            }
+        }
+
+        draw_text(
+            credits,
+            {ticker, credits->font_size, credits->text_color, 0, false},
+            static_cast<int>(credits->content_height / 2 + credits->font_size / 2 - 4)
+        );
+        credits->dirty = true;
+        return;
+    }
+
+    credits->content_width = kCanvasWidth;
     const std::vector<text_line> lines = make_lines(credits);
     uint32_t height = 80;
     for (const text_line &line : lines)
@@ -419,7 +501,7 @@ void upload_texture(member_credits_data *credits)
 
     destroy_texture(credits);
     credits->texture = gs_texture_create(
-        kCanvasWidth,
+        credits->content_width,
         credits->content_height,
         GS_RGBA,
         1,
@@ -430,7 +512,7 @@ void upload_texture(member_credits_data *credits)
         gs_texture_set_image(
             credits->texture,
             credits->pixels.data(),
-            kCanvasWidth * 4,
+            credits->content_width * 4,
             false
         );
         credits->dirty = false;
@@ -438,7 +520,7 @@ void upload_texture(member_credits_data *credits)
             blog(
                 LOG_INFO,
                 "member-credits: texture=%ux%u pixels=%zu",
-                kCanvasWidth,
+                credits->content_width,
                 credits->content_height,
                 credits->pixels.size()
             );
@@ -457,6 +539,8 @@ void member_credits_update(void *data, obs_data_t *settings)
     const char *footer = obs_data_get_string(settings, "footer");
     const char *members = obs_data_get_string(settings, "members");
     const char *font_path = obs_data_get_string(settings, "font_path");
+    const char *layout_mode = obs_data_get_string(settings, "layout_mode");
+    const char *text_align = obs_data_get_string(settings, "text_align");
     if (title)
         credits->title = title;
     if (kicker && (obs_data_has_user_value(settings, "kicker") ||
@@ -471,6 +555,10 @@ void member_credits_update(void *data, obs_data_t *settings)
     load_roster_file(credits);
     if (font_path)
         credits->font_path = font_path;
+    if (layout_mode && *layout_mode)
+        credits->layout_mode = layout_mode;
+    if (text_align && *text_align)
+        credits->text_align = text_align;
 
     credits->font_size = static_cast<int>(obs_data_get_int(settings, "font_size"));
     credits->speed = static_cast<int>(obs_data_get_int(settings, "speed"));
@@ -520,6 +608,8 @@ void member_credits_save(void *data, obs_data_t *settings)
     obs_data_set_string(settings, "members", credits->members.c_str());
     obs_data_set_string(settings, "roster_file", credits->roster_file.c_str());
     obs_data_set_string(settings, "font_path", credits->font_path.c_str());
+    obs_data_set_string(settings, "layout_mode", credits->layout_mode.c_str());
+    obs_data_set_string(settings, "text_align", credits->text_align.c_str());
     obs_data_set_int(settings, "font_size", credits->font_size);
     obs_data_set_int(settings, "speed", credits->speed);
     obs_data_set_int(settings, "accent", credits->accent);
@@ -604,47 +694,46 @@ bool member_credits_reload_roster(obs_properties_t *, obs_property_t *, void *da
 obs_properties_t *member_credits_properties(void *data)
 {
     obs_properties_t *properties = obs_properties_create();
+    obs_properties_t *playback = obs_properties_create();
     obs_properties_add_button2(
-        properties,
-        "play",
-        obs_module_text("Play"),
-        member_credits_play,
-        data
-    );
-    obs_properties_add_button2(
-        properties,
-        "pause",
-        obs_module_text("Pause"),
-        member_credits_pause,
-        data
-    );
-    obs_properties_add_button2(
-        properties,
-        "stop",
-        obs_module_text("Stop"),
-        member_credits_stop,
-        data
-    );
-    obs_properties_add_button2(
-        properties,
+        playback,
         "reset_play",
         obs_module_text("Reset & Play"),
         member_credits_reset_play,
         data
     );
-    obs_properties_add_button2(
+    obs_properties_add_button2(playback, "play", obs_module_text("Play"), member_credits_play, data);
+    obs_properties_add_button2(playback, "pause", obs_module_text("Pause"), member_credits_pause, data);
+    obs_properties_add_button2(playback, "stop", obs_module_text("Stop"), member_credits_stop, data);
+    obs_properties_add_group(
         properties,
+        "playback_actions",
+        obs_module_text("Playback"),
+        OBS_GROUP_NORMAL,
+        playback
+    );
+
+    obs_properties_t *data_actions = obs_properties_create();
+    obs_properties_add_button2(
+        data_actions,
         "reload_roster",
         obs_module_text("Reload roster"),
         member_credits_reload_roster,
         data
     );
     obs_properties_add_button2(
-        properties,
+        data_actions,
         "connect_youtube",
         obs_module_text("Connect YouTube"),
         member_credits_connect_youtube,
         data
+    );
+    obs_properties_add_group(
+        properties,
+        "source_actions",
+        obs_module_text("Roster and YouTube"),
+        OBS_GROUP_NORMAL,
+        data_actions
     );
     obs_properties_add_text(properties, "kicker", obs_module_text("Kicker"), OBS_TEXT_DEFAULT);
     obs_properties_add_text(properties, "title", obs_module_text("Title"), OBS_TEXT_DEFAULT);
@@ -671,11 +760,38 @@ obs_properties_t *member_credits_properties(void *data)
         "Font files (*.ttf *.otf)",
         nullptr
     );
+    obs_property_t *layout_mode = obs_properties_add_list(
+        properties,
+        "layout_mode",
+        obs_module_text("Display mode"),
+        OBS_COMBO_TYPE_LIST,
+        OBS_COMBO_FORMAT_STRING
+    );
+    obs_property_list_add_string(
+        layout_mode,
+        obs_module_text("Credit roll"),
+        "credit-roll"
+    );
+    obs_property_list_add_string(
+        layout_mode,
+        obs_module_text("Bottom ticker"),
+        "bottom-ticker"
+    );
+    obs_property_t *text_align = obs_properties_add_list(
+        properties,
+        "text_align",
+        obs_module_text("Text alignment"),
+        OBS_COMBO_TYPE_LIST,
+        OBS_COMBO_FORMAT_STRING
+    );
+    obs_property_list_add_string(text_align, obs_module_text("Left"), "left");
+    obs_property_list_add_string(text_align, obs_module_text("Center / Middle"), "center");
+    obs_property_list_add_string(text_align, obs_module_text("Right"), "right");
     obs_properties_add_int(properties, "font_size", obs_module_text("Font size"), 12, 160, 1);
     obs_properties_add_int(
         properties,
         "speed",
-        obs_module_text("Roll duration (seconds)"),
+        obs_module_text("Animation duration (seconds)"),
         5,
         300,
         1
@@ -706,6 +822,8 @@ void member_credits_defaults(obs_data_t *settings)
     );
     obs_data_set_default_string(settings, "roster_file", default_roster_path().c_str());
     obs_data_set_default_string(settings, "font_path", "");
+    obs_data_set_default_string(settings, "layout_mode", "credit-roll");
+    obs_data_set_default_string(settings, "text_align", "center");
     obs_data_set_default_int(settings, "font_size", kDefaultFontSize);
     obs_data_set_default_int(settings, "speed", kDefaultRollDuration);
     obs_data_set_default_int(settings, "accent", 0xFF91A88B);
@@ -759,11 +877,19 @@ void member_credits_tick(void *data, float seconds)
     }
     const float duration = static_cast<float>(std::max(credits->speed, 1));
     const float progress = std::clamp(credits->elapsed / duration, 0.0f, 1.0f);
-    const float total_distance = static_cast<float>(kCanvasHeight + credits->content_height);
-    credits->scroll_y = static_cast<float>(kCanvasHeight) - total_distance * progress;
-
-    if (credits->elapsed >= duration)
-        credits->playing = false;
+    if (is_ticker(credits)) {
+        const float total_distance = static_cast<float>(kCanvasWidth + credits->content_width);
+        credits->scroll_x = static_cast<float>(kCanvasWidth) - total_distance * progress;
+        if (credits->elapsed >= duration) {
+            credits->elapsed = std::fmod(credits->elapsed, duration);
+            credits->scroll_x = static_cast<float>(kCanvasWidth);
+        }
+    } else {
+        const float total_distance = static_cast<float>(kCanvasHeight + credits->content_height);
+        credits->scroll_y = static_cast<float>(kCanvasHeight) - total_distance * progress;
+        if (credits->elapsed >= duration)
+            credits->playing = false;
+    }
 }
 
 void member_credits_render(void *data, gs_effect_t *effect)
@@ -788,7 +914,7 @@ void member_credits_render(void *data, gs_effect_t *effect)
     if (!draw_effect)
         return;
 
-    if (!credits->transparent_background) {
+    if (!credits->transparent_background && !is_ticker(credits)) {
         struct vec4 background;
         background.x = static_cast<float>(channel(credits->background, 16)) / 255.0f;
         background.y = static_cast<float>(channel(credits->background, 8)) / 255.0f;
@@ -805,9 +931,17 @@ void member_credits_render(void *data, gs_effect_t *effect)
     gs_blend_state_push();
     gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
     gs_matrix_push();
-    gs_matrix_translate3f(0.0f, credits->scroll_y, 0.0f);
+    if (is_ticker(credits)) {
+        gs_matrix_translate3f(
+            credits->scroll_x,
+            static_cast<float>(kCanvasHeight - credits->content_height - 24),
+            0.0f
+        );
+    } else {
+        gs_matrix_translate3f(0.0f, credits->scroll_y, 0.0f);
+    }
     while (gs_effect_loop(draw_effect, "Draw"))
-        gs_draw_sprite(credits->texture, 0, kCanvasWidth, credits->content_height);
+        gs_draw_sprite(credits->texture, 0, credits->content_width, credits->content_height);
     gs_matrix_pop();
     gs_blend_state_pop();
 }

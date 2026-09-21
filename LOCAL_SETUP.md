@@ -191,9 +191,15 @@ Native source controls include:
 - Reset & Play.
 - Connect YouTube.
 - Reload roster.
+- Display mode: credit roll or bottom ticker.
+- Text alignment: left, center/middle, or right.
 - Editable kicker, title, footer, tier, and member text.
 - Optional roster text file.
 - Font, colors, background, transparency, and roll duration.
+
+The bottom ticker renders all member names from the roster in one continuous
+horizontal line. Tier headers, title, kicker, and footer are not included in
+ticker mode.
 
 The Linux native roster cache path is:
 

@@ -53,6 +53,9 @@ Gaya utama adalah creative workspace yang ringan, bukan SaaS dashboard.
 - Background dapat solid atau transparan.
 - Warna title/accent, nama member, dan footer dapat diatur terpisah.
 - Font, ukuran, tier, footer, dan kecepatan dapat dikonfigurasi.
+- Mode tampilan mendukung credit roll dan bottom ticker.
+- Text alignment mendukung left, center/middle, dan right.
+- Bottom ticker menampilkan seluruh nama member tanpa header tier.
 - Animasi harus terasa tenang, tidak terburu-buru.
 
 ## 5. MVP Web Saat Ini

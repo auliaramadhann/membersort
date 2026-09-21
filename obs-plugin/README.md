@@ -7,8 +7,10 @@ Native OBS source for the Member Credits project.
 This is the first cross-platform native prototype. It registers a `Member
 Credits` source, exposes native OBS properties, resets when the source becomes
 visible, renders title/tier/member/footer text with FreeType, and runs a
-vertical credit-roll animation. The source can load a UTF-8 roster text file
-exported by the authenticated dashboard.
+vertical credit-roll or bottom ticker animation. Text alignment supports left,
+center/middle, and right. The source can load a UTF-8 roster text file exported
+by the authenticated dashboard; the ticker uses all member names and omits tier
+headers.
 
 The plugin is intentionally separate from the React dashboard and YouTube API
 server.

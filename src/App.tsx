@@ -17,12 +17,17 @@ type YouTubeStatus = {
   channel?: { id?: string; title: string } | null;
 };
 
+type LayoutMode = 'credit-roll' | 'bottom-ticker';
+type TextAlign = 'left' | 'center' | 'right';
+
 type CreditsConfig = {
   kicker: string;
   title: string;
   footer: string;
   fontSize: number;
   speed: number;
+  layoutMode: LayoutMode;
+  textAlign: TextAlign;
   font: 'casual' | 'rounded' | 'clean';
   accent: string;
   textColor: string;
@@ -38,6 +43,8 @@ const defaultConfig: CreditsConfig = {
   footer: 'Thank you for keeping this channel alive.',
   fontSize: 34,
   speed: 45,
+  layoutMode: 'credit-roll',
+  textAlign: 'center',
   font: 'casual',
   accent: '#91a88b',
   textColor: '#292824',
@@ -74,6 +81,10 @@ function membersFromText(members: string) {
     .filter(Boolean);
 }
 
+function memberNames(config: CreditsConfig) {
+  return config.tiers.flatMap((tier) => membersFromText(tier.members));
+}
+
 function Credits({
   config,
   preview = false,
@@ -104,7 +115,10 @@ function Credits({
         : config.font === 'rounded'
           ? "'Nunito', sans-serif"
           : "'DM Sans', sans-serif",
+    textAlign: config.textAlign,
   } as React.CSSProperties;
+
+  const tickerText = memberNames(config).join('  |  ');
 
   const content = (
     <div className="credits-content" style={style}>
@@ -130,6 +144,34 @@ function Credits({
   );
 
   if (preview) {
+    if (config.layoutMode === 'bottom-ticker') {
+      return (
+        <div
+          className={`credits-preview is-ticker ${config.transparentBackground ? 'is-transparent' : ''}`}
+          style={style}
+        >
+          <div
+            className={`preview-ticker-shell ${config.transparentBackground ? 'is-transparent' : ''}`}
+          >
+            <div
+              className={`ticker-track ticker-align-${config.textAlign}`}
+              key={resetKey}
+              style={
+                {
+                  '--ticker-duration': `${config.speed}s`,
+                  animationPlayState: playing ? 'running' : 'paused',
+                  fontSize: `${config.fontSize}px`,
+                } as React.CSSProperties
+              }
+            >
+              <span>{tickerText}</span>
+              <span aria-hidden="true">{tickerText}</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div
         className={`credits-preview ${config.transparentBackground ? 'is-transparent' : ''}`}
@@ -151,9 +193,36 @@ function Credits({
     );
   }
 
+  if (config.layoutMode === 'bottom-ticker') {
+    return (
+      <main
+        className={`overlay-canvas bottom-ticker ${config.transparentBackground ? 'is-transparent' : ''}`}
+        style={{ ...style, backgroundColor: 'transparent' } as React.CSSProperties}
+      >
+        <div
+          className={`ticker-shell ${config.transparentBackground ? 'is-transparent' : ''}`}
+        >
+          <div
+            className={`ticker-track ticker-align-${config.textAlign}`}
+            style={
+              {
+                '--ticker-duration': `${config.speed}s`,
+                animationPlayState: playing ? 'running' : 'paused',
+                fontSize: `${config.fontSize}px`,
+              } as React.CSSProperties
+            }
+          >
+            <span>{tickerText}</span>
+            <span aria-hidden="true">{tickerText}</span>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main
-      className="overlay-canvas"
+      className={`overlay-canvas credit-roll ${config.transparentBackground ? 'is-transparent' : ''}`}
       style={
         {
           ...style,
@@ -367,6 +436,34 @@ function Dashboard() {
             />
           </label>
 
+          <div className="display-controls">
+            <label>
+              Display mode
+              <select
+                value={config.layoutMode}
+                onChange={(event) =>
+                  updateConfig('layoutMode', event.target.value as LayoutMode)
+                }
+              >
+                <option value="credit-roll">Credit roll</option>
+                <option value="bottom-ticker">Bottom ticker</option>
+              </select>
+            </label>
+            <label>
+              Text alignment
+              <select
+                value={config.textAlign}
+                onChange={(event) =>
+                  updateConfig('textAlign', event.target.value as TextAlign)
+                }
+              >
+                <option value="left">Left</option>
+                <option value="center">Center / Middle</option>
+                <option value="right">Right</option>
+              </select>
+            </label>
+          </div>
+
           <div className="range-row">
             <label>
               Font size <output>{config.fontSize}px</output>
@@ -379,7 +476,8 @@ function Dashboard() {
               />
             </label>
             <label>
-              Roll time <output>{config.speed}s</output>
+              {config.layoutMode === 'bottom-ticker' ? 'Ticker cycle' : 'Roll time'}{' '}
+              <output>{config.speed}s</output>
               <input
                 type="range"
                 min="20"
@@ -544,7 +642,7 @@ function Dashboard() {
               <span aria-hidden="true">▶</span> Play
             </button>
             <button
-              className={!previewPlaying ? 'is-active' : ''}
+              className={previewStarted && !previewPlaying ? 'is-active' : ''}
               type="button"
               onClick={() => setPreviewPlaying(false)}
             >
@@ -559,6 +657,16 @@ function Dashboard() {
               }}
             >
               <span aria-hidden="true">■</span> Stop
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPreviewStarted(true);
+                setPreviewResetKey((key) => key + 1);
+                setPreviewPlaying(true);
+              }}
+            >
+              <span aria-hidden="true">↺</span> Reset
             </button>
           </div>
           <div className="overlay-action">
