@@ -556,9 +556,6 @@ input[type='color'] {
   from {
     transform: translateY(100%);
   }
-  12% {
-    transform: translateY(0);
-  }
   to {
     transform: translateY(-100%);
   }

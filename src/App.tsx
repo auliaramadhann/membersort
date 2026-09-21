@@ -18,6 +18,7 @@ type YouTubeStatus = {
 };
 
 type CreditsConfig = {
+  kicker: string;
   title: string;
   footer: string;
   fontSize: number;
@@ -32,6 +33,7 @@ type CreditsConfig = {
 };
 
 const defaultConfig: CreditsConfig = {
+  kicker: 'MEMBER ROLL CALL',
   title: 'Special Thanks',
   footer: 'Thank you for keeping this channel alive.',
   fontSize: 34,
@@ -106,7 +108,7 @@ function Credits({
 
   const content = (
     <div className="credits-content" style={style}>
-      <p className="credits-kicker">MEMBER ROLL CALL</p>
+      <p className="credits-kicker">{config.kicker}</p>
       <h1>{config.title}</h1>
       <div className="credits-rule" />
       {config.tiers.map((tier, index) => {
@@ -274,6 +276,35 @@ function Dashboard() {
     }
   };
 
+  const exportYouTubeRoster = async () => {
+    setYoutubeLoading(true);
+    setYoutubeMessage('Preparing the native OBS roster...');
+    try {
+      const response = await fetch(`${API_BASE}/api/youtube/roster.txt`, {
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        const payload = (await response.json()) as { error?: { message?: string } };
+        throw new Error(payload.error?.message || 'Roster export failed.');
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'member-roster.txt';
+      link.click();
+      URL.revokeObjectURL(url);
+      setYoutubeMessage(
+        'Roster downloaded. Load it from the native OBS source properties.',
+      );
+    } catch (error) {
+      setYoutubeMessage(error instanceof Error ? error.message : 'Roster export failed.');
+    } finally {
+      setYoutubeLoading(false);
+    }
+  };
+
   return (
     <main className="dashboard">
       <header className="topbar">
@@ -314,6 +345,13 @@ function Dashboard() {
             <h2>Play around with it</h2>
           </div>
 
+          <label>
+            Credit kicker
+            <input
+              value={config.kicker}
+              onChange={(event) => updateConfig('kicker', event.target.value)}
+            />
+          </label>
           <label>
             Credit title
             <input
@@ -467,6 +505,13 @@ function Dashboard() {
                 onClick={importYouTubeMembers}
               >
                 {youtubeLoading ? 'Checking...' : 'Test & import members'}
+              </button>
+              <button
+                type="button"
+                disabled={!youtubeStatus.connected || youtubeLoading}
+                onClick={exportYouTubeRoster}
+              >
+                Export native roster
               </button>
             </div>
           </div>
