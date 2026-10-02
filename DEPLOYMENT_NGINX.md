@@ -56,11 +56,14 @@ SESSION_SECRET=generate-a-long-random-value
 NATIVE_ROSTER_PATH=/var/lib/member-credits/member-roster.txt
 ```
 
-Start ngrok against Nginx:
+Start ngrok directly against the isolated Node service:
 
 ```bash
-ngrok http 127.0.0.1:8080
+ngrok http 127.0.0.1:8787
 ```
+
+The repository also includes `deploy/systemd/member-credits-ngrok.service`
+for keeping this tunnel separate from any existing Cloudflare tunnel.
 
 The generated HTTPS URL must be used for both `FRONTEND_URL` and
 `PUBLIC_URL`. Add its `/auth/google/callback` path exactly to the Google OAuth

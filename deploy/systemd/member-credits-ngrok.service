@@ -1,0 +1,17 @@
+[Unit]
+Description=Member Credits ngrok Tunnel
+After=member-credits-api.service
+Requires=member-credits-api.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/member-credits
+ExecStart=/usr/local/bin/ngrok http 127.0.0.1:8787 --log=stdout
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
