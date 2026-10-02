@@ -15,6 +15,7 @@ const app = express();
 const port = Number(process.env.PORT || 8787);
 const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
 const publicUrl = (process.env.PUBLIC_URL || frontendUrl).replace(/\/$/, '');
+const frontendDistPath = path.join(process.cwd(), 'dist');
 const redirectUri =
   process.env.GOOGLE_REDIRECT_URI || `http://localhost:${port}/auth/google/callback`;
 const membershipScope =
@@ -73,6 +74,7 @@ app.use(
     },
   }),
 );
+app.use(express.static(frontendDistPath));
 
 function loadOAuthClient() {
   const credentialsPath = process.env.GOOGLE_CREDENTIALS_PATH;
@@ -552,6 +554,13 @@ app.get('/api/native/device/roster.txt', async (request, response) => {
       .type('text/plain')
       .send(`device_sync_failed: ${details.message}`);
   }
+});
+
+app.get(/^(?!\/(?:api|auth|health)(?:\/|$)).*/, (request, response, next) => {
+  if (request.method !== 'GET') return next();
+  response.sendFile(path.join(frontendDistPath, 'index.html'), (error) => {
+    if (error) next(error);
+  });
 });
 
 const host = process.env.HOST || '127.0.0.1';
