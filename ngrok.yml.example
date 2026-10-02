@@ -1,0 +1,6 @@
+version: '2'
+
+tunnels:
+  member-credits:
+    proto: http
+    addr: 127.0.0.1:8080

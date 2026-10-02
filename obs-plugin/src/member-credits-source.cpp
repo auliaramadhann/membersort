@@ -1,17 +1,22 @@
 #include "member-credits-source.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <cstdlib>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include <curl/curl.h>
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -27,7 +32,90 @@ constexpr int kDefaultFontSize = 34;
 constexpr int kDefaultRollDuration = 45;
 constexpr int kTickerPadding = 72;
 constexpr int kTickerHeight = 112;
-constexpr const char *kAuthUrl = "http://localhost:8787/auth/google";
+constexpr const char *kDefaultApiUrl = "http://localhost:8787";
+
+struct http_response {
+    long status = 0;
+    std::string body;
+};
+
+size_t curl_write_body(char *data, size_t size, size_t count, void *userdata)
+{
+    auto *body = static_cast<std::string *>(userdata);
+    body->append(data, size * count);
+    return size * count;
+}
+
+bool http_get(const std::string &url, const std::string &token, http_response &result)
+{
+    CURL *curl = curl_easy_init();
+    if (!curl)
+        return false;
+
+    struct curl_slist *headers = nullptr;
+    if (!token.empty())
+        headers = curl_slist_append(headers, ("Authorization: Bearer " + token).c_str());
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_body);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    const CURLcode code = curl_easy_perform(curl);
+    if (code == CURLE_OK)
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &result.status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return code == CURLE_OK;
+}
+
+std::string response_field(const std::string &body, const std::string &key)
+{
+    const std::string prefix = key + "=";
+    size_t start = 0;
+    while (start < body.size()) {
+        const size_t end = body.find('\n', start);
+        const std::string line = body.substr(start, end == std::string::npos ? end : end - start);
+        if (line.rfind(prefix, 0) == 0)
+            return line.substr(prefix.size());
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    return {};
+}
+
+std::string trim_api_url(std::string url)
+{
+    while (!url.empty() && url.back() == '/')
+        url.pop_back();
+    return url;
+}
+
+std::string shell_quote(const std::string &value)
+{
+    std::string quoted = "'";
+    for (const char character : value) {
+        if (character == '\'')
+            quoted += "'\\''";
+        else
+            quoted += character;
+    }
+    quoted += "'";
+    return quoted;
+}
+
+void open_browser(const std::string &url)
+{
+#ifdef _WIN32
+    std::system(("start \"\" \"" + url + "\"").c_str());
+#elif __APPLE__
+    std::system(("open " + shell_quote(url)).c_str());
+#else
+    std::system(("xdg-open " + shell_quote(url)).c_str());
+#endif
+}
 
 struct text_line {
     std::string value;
@@ -55,6 +143,7 @@ struct member_credits_data {
         "Fia\n"
         "YukiTan";
     std::string roster_file;
+    std::string api_url = kDefaultApiUrl;
     std::string font_path;
     std::string layout_mode = "credit-roll";
     std::string text_align = "center";
@@ -80,6 +169,13 @@ struct member_credits_data {
     FT_Face face = nullptr;
     bool render_logged = false;
     bool tick_logged = false;
+    std::thread network_thread;
+    std::atomic<bool> network_stop{false};
+    std::atomic<bool> remote_active{false};
+    std::mutex network_mutex;
+    std::string device_token;
+    std::string pending_members;
+    bool pending_members_changed = false;
 };
 
 void reset_animation(member_credits_data *credits, bool autoplay)
@@ -91,6 +187,151 @@ void reset_animation(member_credits_data *credits, bool autoplay)
     credits->scroll_y = static_cast<float>(kCanvasHeight);
     credits->scroll_x = static_cast<float>(kCanvasWidth);
     credits->playing = autoplay;
+}
+
+bool wait_for_network(member_credits_data *credits, int milliseconds)
+{
+    for (int elapsed = 0; elapsed < milliseconds; elapsed += 100) {
+        if (credits->network_stop.load())
+            return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return true;
+}
+
+void set_device_token(member_credits_data *credits, const std::string &token)
+{
+    std::lock_guard<std::mutex> lock(credits->network_mutex);
+    credits->device_token = token;
+}
+
+std::string get_device_token(member_credits_data *credits)
+{
+    std::lock_guard<std::mutex> lock(credits->network_mutex);
+    return credits->device_token;
+}
+
+void queue_remote_roster(member_credits_data *credits, const std::string &roster)
+{
+    if (roster.empty())
+        return;
+    std::lock_guard<std::mutex> lock(credits->network_mutex);
+    if (roster != credits->pending_members) {
+        credits->pending_members = roster;
+        credits->pending_members_changed = true;
+    }
+}
+
+void remote_sync_loop(member_credits_data *credits, std::string api_url, std::string device_token)
+{
+    api_url = trim_api_url(std::move(api_url));
+    if (api_url.empty()) {
+        blog(LOG_WARNING, "member-credits: API URL is empty");
+        return;
+    }
+
+    if (device_token.empty()) {
+        http_response start_response;
+        if (!http_get(api_url + "/api/native/pairing/start", {}, start_response) ||
+            start_response.status != 200) {
+            blog(LOG_WARNING, "member-credits: unable to start native pairing");
+            return;
+        }
+
+        const std::string pairing_id = response_field(start_response.body, "pairing_id");
+        const std::string pairing_secret = response_field(start_response.body, "pairing_secret");
+        const std::string auth_url = response_field(start_response.body, "auth_url");
+        if (pairing_id.empty() || pairing_secret.empty() || auth_url.empty()) {
+            blog(LOG_WARNING, "member-credits: invalid native pairing response");
+            return;
+        }
+
+        blog(LOG_INFO, "member-credits: opening browser for native pairing");
+        open_browser(auth_url);
+        for (int attempt = 0; attempt < 150 && !credits->network_stop.load(); ++attempt) {
+            http_response status_response;
+            const std::string status_url = api_url + "/api/native/pairing/status?id=" +
+                                           pairing_id + "&secret=" + pairing_secret;
+            if (http_get(status_url, {}, status_response) && status_response.status == 200) {
+                if (response_field(status_response.body, "status") == "authorized") {
+                    device_token = response_field(status_response.body, "device_token");
+                    if (!device_token.empty())
+                        break;
+                }
+            } else if (status_response.status == 404) {
+                blog(LOG_WARNING, "member-credits: native pairing expired");
+                return;
+            }
+            if (!wait_for_network(credits, 2000))
+                return;
+        }
+        if (device_token.empty()) {
+            blog(LOG_WARNING, "member-credits: native pairing timed out");
+            return;
+        }
+        set_device_token(credits, device_token);
+        credits->remote_active.store(true);
+        blog(LOG_INFO, "member-credits: native pairing authorized");
+    } else {
+        credits->remote_active.store(true);
+    }
+
+    while (!credits->network_stop.load()) {
+        http_response roster_response;
+        if (!http_get(api_url + "/api/native/device/roster.txt", device_token, roster_response)) {
+            blog(LOG_WARNING, "member-credits: native roster request failed");
+        } else if (roster_response.status == 200) {
+            queue_remote_roster(credits, roster_response.body);
+        } else if (roster_response.status == 401) {
+            credits->remote_active.store(false);
+            set_device_token(credits, {});
+            blog(LOG_WARNING, "member-credits: native device token expired");
+            return;
+        } else {
+            blog(LOG_WARNING, "member-credits: native roster request returned HTTP %ld", roster_response.status);
+        }
+        if (!wait_for_network(credits, 5000))
+            return;
+    }
+}
+
+void stop_network_sync(member_credits_data *credits)
+{
+    credits->network_stop.store(true);
+    if (credits->network_thread.joinable())
+        credits->network_thread.join();
+    credits->remote_active.store(false);
+}
+
+void start_network_sync(member_credits_data *credits)
+{
+    stop_network_sync(credits);
+    credits->network_stop.store(false);
+    const std::string api_url = credits->api_url;
+    const std::string device_token = get_device_token(credits);
+    credits->network_thread = std::thread(
+        remote_sync_loop,
+        credits,
+        api_url,
+        device_token
+    );
+}
+
+void apply_pending_remote_roster(member_credits_data *credits)
+{
+    std::string roster;
+    {
+        std::lock_guard<std::mutex> lock(credits->network_mutex);
+        if (!credits->pending_members_changed)
+            return;
+        roster = credits->pending_members;
+        credits->pending_members_changed = false;
+    }
+    if (roster != credits->members) {
+        credits->members = std::move(roster);
+        credits->dirty = true;
+        reset_animation(credits, true);
+    }
 }
 
 bool is_ticker(const member_credits_data *credits)
@@ -538,6 +779,8 @@ void member_credits_update(void *data, obs_data_t *settings)
     const char *kicker = obs_data_get_string(settings, "kicker");
     const char *footer = obs_data_get_string(settings, "footer");
     const char *members = obs_data_get_string(settings, "members");
+    const char *api_url = obs_data_get_string(settings, "api_url");
+    const char *device_token = obs_data_get_string(settings, "device_token");
     const char *font_path = obs_data_get_string(settings, "font_path");
     const char *layout_mode = obs_data_get_string(settings, "layout_mode");
     const char *text_align = obs_data_get_string(settings, "text_align");
@@ -550,6 +793,12 @@ void member_credits_update(void *data, obs_data_t *settings)
         credits->footer = footer;
     if (members)
         credits->members = members;
+    if (api_url && *api_url)
+        credits->api_url = trim_api_url(api_url);
+    if (device_token) {
+        std::lock_guard<std::mutex> lock(credits->network_mutex);
+        credits->device_token = device_token;
+    }
     const char *roster_file = obs_data_get_string(settings, "roster_file");
     credits->roster_file = roster_file && *roster_file ? roster_file : default_roster_path();
     load_roster_file(credits);
@@ -577,6 +826,8 @@ void *member_credits_create(obs_data_t *settings, obs_source_t *source)
     auto *credits = new member_credits_data();
     credits->source = source;
     member_credits_update(credits, settings);
+    if (!get_device_token(credits).empty())
+        start_network_sync(credits);
     return credits;
 }
 
@@ -586,6 +837,7 @@ void member_credits_destroy(void *data)
     if (!credits)
         return;
 
+    stop_network_sync(credits);
     obs_enter_graphics();
     destroy_texture(credits);
     obs_leave_graphics();
@@ -607,6 +859,11 @@ void member_credits_save(void *data, obs_data_t *settings)
     obs_data_set_string(settings, "footer", credits->footer.c_str());
     obs_data_set_string(settings, "members", credits->members.c_str());
     obs_data_set_string(settings, "roster_file", credits->roster_file.c_str());
+    obs_data_set_string(settings, "api_url", credits->api_url.c_str());
+    {
+        std::lock_guard<std::mutex> lock(credits->network_mutex);
+        obs_data_set_string(settings, "device_token", credits->device_token.c_str());
+    }
     obs_data_set_string(settings, "font_path", credits->font_path.c_str());
     obs_data_set_string(settings, "layout_mode", credits->layout_mode.c_str());
     obs_data_set_string(settings, "text_align", credits->text_align.c_str());
@@ -662,17 +919,13 @@ bool member_credits_reset_play(obs_properties_t *, obs_property_t *, void *data)
     return false;
 }
 
-bool member_credits_connect_youtube(obs_properties_t *, obs_property_t *, void *)
+bool member_credits_connect_youtube(obs_properties_t *, obs_property_t *, void *data)
 {
-    std::thread([] {
-#ifdef _WIN32
-        std::system("start \"\" \"http://localhost:8787/auth/google\"");
-#elif __APPLE__
-        std::system("open \"http://localhost:8787/auth/google\"");
-#else
-        std::system("xdg-open \"http://localhost:8787/auth/google\"");
-#endif
-    }).detach();
+    auto *credits = static_cast<member_credits_data *>(data);
+    if (credits) {
+        set_device_token(credits, {});
+        start_network_sync(credits);
+    }
     return false;
 }
 
@@ -752,6 +1005,12 @@ obs_properties_t *member_credits_properties(void *data)
         "Roster files (*.txt)",
         nullptr
     );
+    obs_properties_add_text(
+        properties,
+        "api_url",
+        obs_module_text("Public API URL"),
+        OBS_TEXT_DEFAULT
+    );
     obs_properties_add_path(
         properties,
         "font_path",
@@ -821,6 +1080,8 @@ void member_credits_defaults(obs_data_t *settings)
         "[Starlight Members]\nBubu Boba\nFia\nYukiTan"
     );
     obs_data_set_default_string(settings, "roster_file", default_roster_path().c_str());
+    obs_data_set_default_string(settings, "api_url", kDefaultApiUrl);
+    obs_data_set_default_string(settings, "device_token", "");
     obs_data_set_default_string(settings, "font_path", "");
     obs_data_set_default_string(settings, "layout_mode", "credit-roll");
     obs_data_set_default_string(settings, "text_align", "center");
@@ -863,7 +1124,8 @@ void member_credits_tick(void *data, float seconds)
     if (!credits)
         return;
 
-    if (load_roster_file(credits)) {
+    apply_pending_remote_roster(credits);
+    if (!credits->remote_active.load() && load_roster_file(credits)) {
         credits->dirty = true;
         reset_animation(credits, true);
     }

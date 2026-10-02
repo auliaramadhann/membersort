@@ -34,12 +34,13 @@ Install tools berikut:
 - OBS Studio.
 - OBS development headers and library.
 - FreeType development headers.
+- libcurl development headers and library for remote native pairing.
 
 Ubuntu/Debian example:
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake ninja-build pkg-config libfreetype6-dev libobs-dev
+sudo apt install -y build-essential cmake ninja-build pkg-config libfreetype6-dev libobs-dev libcurl4-openssl-dev
 ```
 
 Versi `libobs-dev` harus sesuai atau kompatibel dengan versi OBS yang digunakan.

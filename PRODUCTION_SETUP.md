@@ -14,8 +14,7 @@ The current local implementation still uses:
 - `express-session` MemoryStore.
 - In-memory token and live-monitor state.
 - A single-user native roster cache.
-- A frontend API URL that defaults to localhost.
-- A native flow designed for a local companion API.
+- A temporary in-memory native pairing flow for small tests.
 
 For a private one-channel test, the current server can run on a VPS behind
 HTTPS. For public multi-user use, complete the production checklist first.
@@ -309,15 +308,18 @@ The frontend must never call `http://localhost:8787` for a remote user.
 The current native plugin opens a local URL and reads a local roster cache.
 That is suitable for local development only.
 
-For users on other computers, implement native pairing:
+For users on other computers, the temporary native pairing flow works as follows:
 
-1. Native generates a one-time pairing code.
+1. Native generates a one-time pairing request.
 2. Native opens `https://app.example.com/connect/native?code=...`.
 3. User completes Google OAuth in the browser.
 4. API binds the YouTube connection to the pairing request.
-5. Native receives a short-lived device token.
-6. Native fetches roster and live events through `https://api.example.com`.
+5. Native receives a device token that expires after the temporary test period.
+6. Native fetches roster and live events through the public API.
 7. Refresh tokens remain server-side and never enter OBS scene settings.
+
+The current implementation keeps pairing and device state in memory. Production
+use still requires persistent users, sessions, devices, and revocation.
 
 Do not use a VPS filesystem path as a cache path for a remote native plugin.
 
@@ -379,7 +381,12 @@ sudo systemctl restart member-credits-api
 
 ## Temporary Public Testing Without a Domain
 
-Use Cloudflare Quick Tunnel from a local reverse proxy or the VPS:
+Use the Nginx/ngrok flow documented in `DEPLOYMENT_NGINX.md`. It keeps the
+frontend, OAuth callback, and native pairing on one public origin. The native
+plugin can then open the public URL, receive a per-device token, and poll its
+roster. Pairing state is in memory and must be repeated after an API restart.
+
+Cloudflare Quick Tunnel is also possible from a local reverse proxy or VPS:
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:8080

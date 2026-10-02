@@ -17,21 +17,19 @@ server.
 
 ## Test with real YouTube members
 
-The first native integration keeps OAuth in the existing local dashboard and
-uses a plain UTF-8 text roster as the handoff. This avoids putting tokens or a
-networking stack inside the native renderer.
+The native integration uses a short-lived device token and keeps Google OAuth
+tokens in the API server. The plugin only receives the roster over HTTPS.
 
-1. Start the API and dashboard with `npm run dev:server` and `npm run dev`.
-2. Connect the YouTube channel from the dashboard.
-3. Use `Export native roster` in the YouTube members panel.
-4. Open the native source properties in OBS.
-5. Select the downloaded `member-roster.txt` as `Roster file (optional)`.
-6. Click `Reload roster`.
+1. Start the API and dashboard with `npm run dev:server` and `npm run dev`, or
+   deploy them behind the public Nginx/ngrok origin.
+2. Open the native source properties in OBS.
+3. Set `Public API URL` to the API/dashboard origin.
+4. Click `Connect YouTube` and complete OAuth in the browser.
+5. The plugin pairs with that browser session and refreshes its local render.
 
-The `Connect YouTube` button in the native source opens the same browser OAuth
-flow. When the local API is configured, it writes the roster directly to the
-shared OBS plugin config path, so the native source can pick up changes without
-storing OAuth tokens in OBS.
+For local development, `Public API URL` may remain `http://localhost:8787`.
+For a VPS test, use the HTTPS ngrok URL. The plugin stores only a device token,
+not a Google access or refresh token.
 
 The file format is one tier per block:
 
@@ -49,6 +47,7 @@ selected or the file cannot be read.
 - CMake 3.20 or newer.
 - C++17 compiler.
 - OBS development headers and library.
+- libcurl development headers and library.
 
 The current development machine does not have CMake or OBS development files
 installed, so native compilation must currently be performed on a machine with
@@ -95,6 +94,4 @@ ProgramData plugin layout. macOS uses a `.plugin` bundle.
 2. Verify source properties persistence in a scene collection.
 3. Implement native text and tier rendering.
 4. Implement Play, Pause, Stop, and scene visibility reset.
-5. Add local cached member data.
-6. Connect OAuth and YouTube synchronization without exposing tokens in OBS
-   source settings.
+5. Add persistent per-user storage and device revocation for production.

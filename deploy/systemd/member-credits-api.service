@@ -1,0 +1,21 @@
+[Unit]
+Description=Member Credits API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=member-credits
+Group=member-credits
+WorkingDirectory=/opt/member-credits
+EnvironmentFile=/etc/member-credits/member-credits.env
+ExecStart=/usr/bin/node /opt/member-credits/server/index.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/member-credits
+
+[Install]
+WantedBy=multi-user.target

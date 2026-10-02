@@ -139,6 +139,7 @@ Current visual controls:
 - OBS Studio.
 - OBS development headers and library.
 - FreeType development headers and library.
+- libcurl development headers and library for remote native pairing.
 
 Ubuntu/Debian packages:
 
@@ -150,7 +151,8 @@ sudo apt install -y \
   ninja-build \
   pkg-config \
   libfreetype6-dev \
-  libobs-dev
+  libobs-dev \
+  libcurl4-openssl-dev
 ```
 
 The `libobs-dev` version must be compatible with the installed OBS version.
@@ -199,24 +201,27 @@ Create `.env.local` from `.env.example` for local development.
 | `GOOGLE_REDIRECT_URI`     | Yes                        | `http://localhost:8787/auth/google/callback` | `https://api.example.com/auth/google/callback`  |
 | `SESSION_SECRET`          | Yes                        | Long random local secret                     | Long random production secret                   |
 | `FRONTEND_URL`            | Yes                        | `http://localhost:5173`                      | `https://app.example.com`                       |
+| `PUBLIC_URL`              | No                         | Same as `FRONTEND_URL`                       | Public origin used by native pairing            |
 | `PORT`                    | No                         | `8787`                                       | `8787`                                          |
+| `HOST`                    | No                         | `127.0.0.1`                                  | `127.0.0.1`                                     |
+| `TRUST_PROXY`             | No                         | `0`                                          | `1`                                             |
 | `NATIVE_ROSTER_PATH`      | No                         | Local OBS roster path                        | `/var/lib/member-credits/member-roster.txt`     |
 | `OBS_CONFIG_ROOT`         | No                         | OS-specific OBS config root                  | Usually not used by public API                  |
 | `VITE_API_BASE`           | Needed for remote frontend | Empty or `http://localhost:8787`             | Public API origin or same-origin proxy path     |
 
-Important implementation note:
+Frontend API configuration:
 
-`src/App.tsx` currently has a hardcoded API base:
+`src/App.tsx` uses a configurable API base:
 
 ```ts
-const API_BASE = 'http://localhost:8787';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 ```
 
-Before exposing the frontend to another computer, replace it with a
-production-aware value, for example:
+For a same-origin Nginx/ngrok deployment, leave `VITE_API_BASE` empty. For a
+separate API origin, set it during the frontend build, for example:
 
 ```ts
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8787';
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 ```
 
 Do not assume a remote user's `localhost` points to the VPS. It points to the
@@ -353,18 +358,22 @@ different user's computer.
 
 ## 12. API Endpoints
 
-| Method | Path                       | Purpose                           |
-| ------ | -------------------------- | --------------------------------- |
-| `GET`  | `/health`                  | Server health check               |
-| `GET`  | `/auth/google`             | Start Google OAuth                |
-| `GET`  | `/auth/google/callback`    | OAuth callback                    |
-| `GET`  | `/api/auth/status`         | Current local session status      |
-| `GET`  | `/api/youtube/test`        | Fetch current YouTube members     |
-| `GET`  | `/api/youtube/roster.txt`  | Download grouped native roster    |
-| `GET`  | `/api/youtube/live/events` | Fetch/poll live membership events |
+| Method | Path                            | Purpose                                    |
+| ------ | ------------------------------- | ------------------------------------------ |
+| `GET`  | `/health`                       | Server health check                        |
+| `GET`  | `/auth/google`                  | Start Google OAuth                         |
+| `GET`  | `/auth/google/callback`         | OAuth callback                             |
+| `GET`  | `/api/auth/status`              | Current local session status               |
+| `GET`  | `/api/youtube/test`             | Fetch current YouTube members              |
+| `GET`  | `/api/youtube/roster.txt`       | Download grouped native roster             |
+| `GET`  | `/api/youtube/live/events`      | Fetch/poll live membership events          |
+| `GET`  | `/api/native/pairing/start`     | Create a short-lived OBS pairing request   |
+| `GET`  | `/api/native/pairing/status`    | Poll native pairing authorization          |
+| `GET`  | `/api/native/device/roster.txt` | Fetch a paired device roster and live sync |
 
-Current API state is not production-safe for multiple users. The server uses
-in-memory token, roster, live monitor, and session state.
+Native pairing is implemented for small temporary tests, but pairing, device,
+session, and live state are still in memory. This is not production-safe for
+multiple users or service restarts.
 
 ## 13. Temporary Public Testing With ngrok
 

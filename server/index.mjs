@@ -14,6 +14,7 @@ dotenv.config();
 const app = express();
 const port = Number(process.env.PORT || 8787);
 const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+const publicUrl = (process.env.PUBLIC_URL || frontendUrl).replace(/\/$/, '');
 const redirectUri =
   process.env.GOOGLE_REDIRECT_URI || `http://localhost:${port}/auth/google/callback`;
 const membershipScope =
@@ -35,11 +36,19 @@ const nativeRosterPath =
     'member-credits',
     'member-roster.txt',
   );
-let latestTokens = null;
-let cachedRoster = null;
-let liveMonitorTimer = null;
-let livePageToken = null;
-let liveChatId = null;
+const sessionSecret = process.env.SESSION_SECRET || 'local-only-member-credits-secret';
+const nativePairingLifetimeMs = 10 * 60 * 1000;
+const nativeDeviceLifetimeMs = 30 * 24 * 60 * 60 * 1000;
+const nativePairings = new Map();
+const nativeDevices = new Map();
+
+if (process.env.NODE_ENV === 'production' && !process.env.SESSION_SECRET) {
+  throw new Error('SESSION_SECRET must be configured in production.');
+}
+
+if (process.env.NODE_ENV === 'production' || process.env.TRUST_PROXY === '1') {
+  app.set('trust proxy', 1);
+}
 
 app.use(express.json());
 app.use((request, response, next) => {
@@ -52,13 +61,14 @@ app.use((request, response, next) => {
 app.use(
   session({
     name: 'member-credits.sid',
-    secret: process.env.SESSION_SECRET || 'local-only-member-credits-secret',
+    secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
       sameSite: 'lax',
-      secure: false,
+      secure:
+        process.env.NODE_ENV === 'production' || process.env.COOKIE_SECURE === 'true',
       maxAge: 1000 * 60 * 60 * 24,
     },
   }),
@@ -85,10 +95,19 @@ function getAuthorizedClient(request) {
   if (!request.session.tokens) return null;
   const client = loadOAuthClient();
   client.setCredentials(request.session.tokens);
-  rememberTokens(request.session.tokens);
   client.on('tokens', (tokens) => {
     request.session.tokens = { ...request.session.tokens, ...tokens };
-    rememberTokens(request.session.tokens);
+  });
+  return client;
+}
+
+function createAuthorizedClient(tokens, onTokens) {
+  const client = loadOAuthClient();
+  let currentTokens = { ...tokens };
+  client.setCredentials(currentTokens);
+  client.on('tokens', (refreshedTokens) => {
+    currentTokens = { ...currentTokens, ...refreshedTokens };
+    onTokens(currentTokens);
   });
   return client;
 }
@@ -104,6 +123,47 @@ function apiError(error) {
 function redirectWithError(response, error) {
   const message = encodeURIComponent(error.message || 'OAuth failed');
   response.redirect(`${frontendUrl}/?oauth=error&message=${message}`);
+}
+
+function removeExpiredNativeState() {
+  const now = Date.now();
+  for (const [id, pairing] of nativePairings) {
+    if (pairing.expiresAt <= now) nativePairings.delete(id);
+  }
+  for (const [tokenHash, device] of nativeDevices) {
+    if (device.expiresAt <= now) nativeDevices.delete(tokenHash);
+  }
+}
+
+function randomToken(bytes = 32) {
+  return crypto.randomBytes(bytes).toString('hex');
+}
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function getNativePairing(id, secret) {
+  removeExpiredNativeState();
+  const pairing = nativePairings.get(id);
+  if (!pairing || typeof secret !== 'string') return null;
+  const expected = Buffer.from(pairing.secret);
+  const received = Buffer.from(secret);
+  if (
+    expected.length !== received.length ||
+    !crypto.timingSafeEqual(expected, received)
+  ) {
+    return null;
+  }
+  return pairing;
+}
+
+function getNativeDevice(request) {
+  const authorization = request.get('authorization') || '';
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  if (!token) return null;
+  removeExpiredNativeState();
+  return nativeDevices.get(hashToken(token)) || null;
 }
 
 async function fetchRoster(client) {
@@ -242,23 +302,21 @@ async function fetchLiveMembershipEvents(client, pageToken) {
 function writeNativeRosterCache(roster) {
   fs.mkdirSync(path.dirname(nativeRosterPath), { recursive: true });
   fs.writeFileSync(nativeRosterPath, rosterText(roster.members), 'utf8');
-  cachedRoster = roster;
 }
 
-function mergeLiveEventsIntoRoster(events) {
-  if (!cachedRoster) return false;
-
+function mergeLiveEventsIntoRoster(roster, events) {
+  if (!roster) return false;
   let changed = false;
   for (const event of events) {
     if (event.type !== 'new_member' && event.type !== 'gifted_member') continue;
-    const alreadyIncluded = cachedRoster.members.some((member) =>
+    const alreadyIncluded = roster.members.some((member) =>
       event.channelId && member.channelId
         ? member.channelId === event.channelId
         : member.displayName === event.displayName,
     );
     if (alreadyIncluded || !event.displayName) continue;
 
-    cachedRoster.members.push({
+    roster.members.push({
       channelId: event.channelId || null,
       displayName: event.displayName,
       profileImageUrl: null,
@@ -270,55 +328,87 @@ function mergeLiveEventsIntoRoster(events) {
     changed = true;
   }
 
-  if (changed) writeNativeRosterCache(cachedRoster);
   return changed;
 }
 
-function scheduleLiveMonitor(delay = 0) {
-  if (liveMonitorTimer) clearTimeout(liveMonitorTimer);
-  liveMonitorTimer = setTimeout(async () => {
-    liveMonitorTimer = null;
-    if (!latestTokens) return;
+async function syncNativeDevice(device) {
+  const client = createAuthorizedClient(device.tokens, (tokens) => {
+    device.tokens = tokens;
+  });
 
-    try {
-      const client = loadOAuthClient();
-      client.setCredentials(latestTokens);
-      const result = await fetchLiveMembershipEvents(client, livePageToken);
-      if (!result.active) {
-        livePageToken = null;
-        liveChatId = null;
-        scheduleLiveMonitor(15000);
-        return;
-      }
+  if (!device.roster) device.roster = await fetchRoster(client);
+  if (Date.now() < device.nextPollAt) return device.roster;
 
-      if (liveChatId !== result.liveChatId) {
-        liveChatId = result.liveChatId;
-        livePageToken = result.nextPageToken;
-      } else {
-        livePageToken = result.nextPageToken;
-      }
-      mergeLiveEventsIntoRoster(result.events);
-      scheduleLiveMonitor(result.pollingIntervalMillis || 5000);
-    } catch (error) {
-      console.error('Live membership monitor failed:', apiError(error));
-      livePageToken = null;
-      liveChatId = null;
-      scheduleLiveMonitor(30000);
-    }
-  }, delay);
-}
+  const result = await fetchLiveMembershipEvents(client, device.livePageToken);
+  if (!result.active) {
+    device.livePageToken = null;
+    device.liveChatId = null;
+    device.nextPollAt = Date.now() + 15000;
+    return device.roster;
+  }
 
-function rememberTokens(tokens) {
-  latestTokens = { ...latestTokens, ...tokens };
-  scheduleLiveMonitor();
+  if (device.liveChatId !== result.liveChatId) {
+    device.liveChatId = result.liveChatId;
+  }
+  device.livePageToken = result.nextPageToken;
+  device.nextPollAt = Date.now() + (result.pollingIntervalMillis || 5000);
+  mergeLiveEventsIntoRoster(device.roster, result.events);
+  return device.roster;
 }
 
 app.get('/health', (_request, response) => {
   response.json({ ok: true, service: 'member-credits-local-api' });
 });
 
+app.get('/api/native/pairing/start', (_request, response) => {
+  removeExpiredNativeState();
+  const id = randomToken(16);
+  const secret = randomToken(24);
+  const pairing = {
+    id,
+    secret,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + nativePairingLifetimeMs,
+    deviceToken: null,
+  };
+  nativePairings.set(id, pairing);
+  const authUrl = `${publicUrl}/auth/google?pairing=${encodeURIComponent(id)}&secret=${encodeURIComponent(secret)}`;
+  response.set('Cache-Control', 'no-store');
+  response
+    .type('text/plain')
+    .send(
+      [
+        `pairing_id=${id}`,
+        `pairing_secret=${secret}`,
+        `auth_url=${authUrl}`,
+        `expires_at=${new Date(pairing.expiresAt).toISOString()}`,
+      ].join('\n'),
+    );
+});
+
+app.get('/api/native/pairing/status', (request, response) => {
+  response.set('Cache-Control', 'no-store');
+  const pairing = getNativePairing(
+    String(request.query.id || ''),
+    String(request.query.secret || ''),
+  );
+  if (!pairing) return response.status(404).type('text/plain').send('status=expired');
+  if (!pairing.deviceToken) return response.type('text/plain').send('status=pending');
+  response
+    .type('text/plain')
+    .send(`status=authorized\ndevice_token=${pairing.deviceToken}`);
+});
+
 app.get('/auth/google', (request, response) => {
   try {
+    if (request.query.pairing || request.query.secret) {
+      const pairing = getNativePairing(
+        String(request.query.pairing || ''),
+        String(request.query.secret || ''),
+      );
+      if (!pairing) throw new Error('This native pairing request has expired.');
+      request.session.nativePairingId = pairing.id;
+    }
     const client = loadOAuthClient();
     const state = crypto.randomBytes(32).toString('hex');
     request.session.oauthState = state;
@@ -348,13 +438,31 @@ app.get('/auth/google/callback', async (request, response) => {
     const { tokens } = await client.getToken(String(request.query.code));
     client.setCredentials(tokens);
     request.session.tokens = tokens;
-    rememberTokens(tokens);
-    try {
-      writeNativeRosterCache(await fetchRoster(client));
-    } catch (error) {
-      console.error('Initial YouTube roster sync failed:', apiError(error));
+    const pairing = request.session.nativePairingId
+      ? nativePairings.get(request.session.nativePairingId)
+      : null;
+    if (pairing && pairing.expiresAt > Date.now()) {
+      const deviceToken = randomToken(32);
+      const device = {
+        tokens,
+        expiresAt: Date.now() + nativeDeviceLifetimeMs,
+        roster: null,
+        livePageToken: null,
+        liveChatId: null,
+        nextPollAt: 0,
+      };
+      nativeDevices.set(hashToken(deviceToken), device);
+      pairing.deviceToken = deviceToken;
+    }
+    if (!pairing) {
+      try {
+        writeNativeRosterCache(await fetchRoster(client));
+      } catch (error) {
+        console.error('Initial YouTube roster sync failed:', apiError(error));
+      }
     }
     delete request.session.oauthState;
+    delete request.session.nativePairingId;
     response.redirect(`${frontendUrl}/?oauth=connected`);
   } catch (error) {
     redirectWithError(response, error);
@@ -416,16 +524,37 @@ app.get('/api/youtube/live/events', async (request, response) => {
     const client = getAuthorizedClient(request);
     if (!client) return response.status(401).json({ error: 'not_connected' });
 
-    rememberTokens(request.session.tokens);
-    response.json(
-      await fetchLiveMembershipEvents(client, String(request.query.pageToken || '')),
-    );
+    const liveState = request.session.liveState || {};
+    const result = await fetchLiveMembershipEvents(client, liveState.pageToken);
+    request.session.liveState = {
+      pageToken: result.nextPageToken,
+      liveChatId: result.liveChatId,
+    };
+    response.json(result);
   } catch (error) {
     const details = apiError(error);
     response.status(details.status).json({ error: details });
   }
 });
 
-app.listen(port, () => {
-  console.log(`Member Credits API listening at http://localhost:${port}`);
+app.get('/api/native/device/roster.txt', async (request, response) => {
+  const device = getNativeDevice(request);
+  if (!device) return response.status(401).type('text/plain').send('device_unauthorized');
+
+  try {
+    const roster = await syncNativeDevice(device);
+    response.set('Cache-Control', 'no-store');
+    response.type('text/plain').send(rosterText(roster.members));
+  } catch (error) {
+    const details = apiError(error);
+    response
+      .status(502)
+      .type('text/plain')
+      .send(`device_sync_failed: ${details.message}`);
+  }
+});
+
+const host = process.env.HOST || '127.0.0.1';
+app.listen(port, host, () => {
+  console.log(`Member Credits API listening at http://${host}:${port}`);
 });
