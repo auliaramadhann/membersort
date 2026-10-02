@@ -17,9 +17,8 @@ add_library(
 
 target_include_directories(${MEMBER_CREDITS_PLUGIN_NAME} PRIVATE include)
 
-find_package(PkgConfig REQUIRED)
 find_package(CURL REQUIRED)
-pkg_check_modules(FREETYPE2 REQUIRED freetype2)
+find_package(Freetype REQUIRED)
 
 find_path(
   OBS_INCLUDE_DIR
@@ -52,16 +51,13 @@ target_include_directories(
   ${MEMBER_CREDITS_PLUGIN_NAME}
   PRIVATE
     ${OBS_INCLUDE_DIR}
-    ${FREETYPE2_INCLUDE_DIRS}
-    ${CURL_INCLUDE_DIRS}
+    ${FREETYPE_INCLUDE_DIRS}
 )
-target_link_directories(${MEMBER_CREDITS_PLUGIN_NAME} PRIVATE ${FREETYPE2_LIBRARY_DIRS})
-target_compile_options(${MEMBER_CREDITS_PLUGIN_NAME} PRIVATE ${FREETYPE2_CFLAGS_OTHER})
 target_link_libraries(
   ${MEMBER_CREDITS_PLUGIN_NAME}
   PRIVATE
     ${OBS_LIBRARY}
-    ${FREETYPE2_LIBRARIES}
+    Freetype::Freetype
     CURL::libcurl
 )
 

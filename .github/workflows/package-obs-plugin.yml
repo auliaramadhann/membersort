@@ -1,0 +1,89 @@
+name: Package OBS Plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      windows_sdk_url:
+        description: Optional ZIP containing source/, install/, and runtime/ OBS SDK directories
+        required: false
+        type: string
+      windows_sdk_sha256:
+        description: Optional SHA-256 for the Windows SDK ZIP
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Package Ubuntu x64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            zip \
+            libcurl4-openssl-dev \
+            libfreetype6-dev \
+            libobs-dev
+
+      - name: Build Linux bundle
+        run: bash obs-plugin/packaging/package-linux.sh
+
+      - name: Upload Linux bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: member-credits-linux-x64
+          path: releases/member-credits-linux-x64.zip
+
+  windows:
+    name: Package Windows x64
+    if: ${{ inputs.windows_sdk_url != '' }}
+    runs-on: windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download OBS SDK bundle
+        shell: pwsh
+        env:
+          SDK_URL: ${{ inputs.windows_sdk_url }}
+          SDK_SHA256: ${{ inputs.windows_sdk_sha256 }}
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'obs-sdk.zip'
+          Invoke-WebRequest -Uri $env:SDK_URL -OutFile $archive
+          if ($env:SDK_SHA256) {
+            $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $env:SDK_SHA256.ToLowerInvariant()) {
+              throw "OBS SDK SHA-256 mismatch. Expected $env:SDK_SHA256, got $actual."
+            }
+          }
+          Expand-Archive -Path $archive -DestinationPath $env:RUNNER_TEMP/obs-sdk -Force
+
+      - name: Build Windows plugin
+        shell: pwsh
+        env:
+          OBS_SOURCE_DIR: ${{ runner.temp }}\obs-sdk\source
+          OBS_INSTALL_DIR: ${{ runner.temp }}\obs-sdk\install
+          CMAKE_PREFIX_PATH: ${{ runner.temp }}\obs-sdk\install
+        run: .\obs-plugin\packaging\build-windows.ps1
+
+      - name: Package Windows bundle
+        shell: pwsh
+        run: |
+          .\obs-plugin\packaging\package-windows.ps1 `
+            -RuntimeDirs @("$env:RUNNER_TEMP\obs-sdk\runtime", "$env:RUNNER_TEMP\obs-sdk\install\bin")
+
+      - name: Upload Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: member-credits-windows-x64
+          path: releases/member-credits-windows-x64.zip

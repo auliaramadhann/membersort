@@ -356,6 +356,36 @@ Linux cache path is:
 Do not use a VPS filesystem path as a cache for an OBS plugin running on a
 different user's computer.
 
+Build a copy-paste Ubuntu bundle:
+
+```bash
+chmod +x obs-plugin/packaging/package-linux.sh
+obs-plugin/packaging/package-linux.sh
+```
+
+Output:
+
+```text
+releases/member-credits-linux-x64.zip
+```
+
+Build a Windows bundle on a Windows x64 machine with an OBS SDK:
+
+```powershell
+.\obs-plugin\packaging\build-windows.ps1
+.\obs-plugin\packaging\package-windows.ps1
+```
+
+Output:
+
+```text
+releases\member-credits-windows-x64.zip
+```
+
+The Windows workflow is manual and accepts an OBS SDK ZIP containing
+`source/`, `install/`, and `runtime/` directories. See
+`obs-plugin/packaging/README.md` for the required SDK layout.
+
 ## 12. API Endpoints
 
 | Method | Path                            | Purpose                                    |

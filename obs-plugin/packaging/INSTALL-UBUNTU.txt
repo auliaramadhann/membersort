@@ -1,0 +1,13 @@
+Member Credits OBS Plugin - Ubuntu x64
+
+1. Close OBS Studio.
+2. Copy the member-credits folder into:
+
+   ~/.config/obs-studio/plugins/
+
+3. Start OBS Studio.
+4. Add a source named Member Credits.
+5. Set Public API URL in the source properties.
+6. Click Connect YouTube.
+
+The plugin requires a compatible 64-bit OBS Studio, libcurl, and FreeType 2.

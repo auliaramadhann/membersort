@@ -5,5 +5,6 @@ dist
 !.env.example
 tokens
 obs-plugin/build
+obs-plugin/build-*
 obs-plugin/out
 releases
