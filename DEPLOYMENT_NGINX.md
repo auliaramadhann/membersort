@@ -22,7 +22,7 @@ sudo apt update
 sudo apt install -y nginx curl git build-essential libcurl4-openssl-dev
 ```
 
-Install Node.js 22, deploy the repository to `/opt/member-credits`, and run:
+Install Node.js 22, deploy the repository to `/var/www/member-credits`, and run:
 
 ```bash
 sudo -u member-credits npm ci
