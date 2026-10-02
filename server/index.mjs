@@ -127,6 +127,14 @@ function redirectWithError(response, error) {
   response.redirect(`${frontendUrl}/?oauth=error&message=${message}`);
 }
 
+function setMembershipStatus(request, state, error = null) {
+  request.session.membershipStatus = {
+    state,
+    ...(error ? { error } : {}),
+    checkedAt: new Date().toISOString(),
+  };
+}
+
 function removeExpiredNativeState() {
   const now = Date.now();
   for (const [id, pairing] of nativePairings) {
@@ -458,13 +466,25 @@ app.get('/auth/google/callback', async (request, response) => {
     }
     if (!pairing) {
       try {
-        writeNativeRosterCache(await fetchRoster(client));
+        const roster = await fetchRoster(client);
+        writeNativeRosterCache(roster);
+        setMembershipStatus(request, 'available');
       } catch (error) {
-        console.error('Initial YouTube roster sync failed:', apiError(error));
+        const details = apiError(error);
+        setMembershipStatus(request, 'unavailable', details);
+        console.error('Initial YouTube roster sync failed:', details);
       }
     }
     delete request.session.oauthState;
     delete request.session.nativePairingId;
+    const membershipStatus = request.session.membershipStatus;
+    if (membershipStatus?.state === 'unavailable') {
+      const message = encodeURIComponent(
+        `Google connected, but YouTube Memberships access failed: ${membershipStatus.error.message}`,
+      );
+      response.redirect(`${frontendUrl}/?oauth=error&message=${message}`);
+      return;
+    }
     response.redirect(`${frontendUrl}/?oauth=connected`);
   } catch (error) {
     redirectWithError(response, error);
@@ -484,6 +504,7 @@ app.get('/api/auth/status', async (request, response) => {
       channel: channel
         ? { id: channel.id, title: channel.snippet?.title || 'YouTube channel' }
         : null,
+      membership: request.session.membershipStatus || { state: 'unknown' },
     });
   } catch (error) {
     response.status(500).json({ connected: false, error: apiError(error) });
@@ -497,9 +518,11 @@ app.get('/api/youtube/test', async (request, response) => {
 
     const roster = await fetchRoster(client);
     writeNativeRosterCache(roster);
+    setMembershipStatus(request, 'available');
     response.json({ ...roster, count: roster.members.length });
   } catch (error) {
     const details = apiError(error);
+    setMembershipStatus(request, 'unavailable', details);
     response.status(details.status).json({ error: details });
   }
 });
@@ -511,12 +534,14 @@ app.get('/api/youtube/roster.txt', async (request, response) => {
 
     const roster = await fetchRoster(client);
     writeNativeRosterCache(roster);
+    setMembershipStatus(request, 'available');
     response
       .type('text/plain')
       .attachment('member-roster.txt')
       .send(rosterText(roster.members));
   } catch (error) {
     const details = apiError(error);
+    setMembershipStatus(request, 'unavailable', details);
     response.status(details.status).json({ error: details });
   }
 });

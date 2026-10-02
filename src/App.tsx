@@ -15,7 +15,25 @@ type YouTubeMember = {
 type YouTubeStatus = {
   connected: boolean;
   channel?: { id?: string; title: string } | null;
+  membership?: MembershipStatus;
 };
+
+type ApiError = {
+  status?: number;
+  reason?: string;
+  message?: string;
+};
+
+type MembershipStatus = {
+  state: 'available' | 'unavailable' | 'unknown';
+  error?: ApiError;
+};
+
+function membershipStatusMessage(status: MembershipStatus) {
+  const reason = status.error?.reason || 'membership_access_error';
+  const message = status.error?.message || 'YouTube Memberships access is unavailable.';
+  return `${reason}: ${message}`;
+}
 
 type LayoutMode = 'credit-roll' | 'bottom-ticker';
 type TextAlign = 'left' | 'center' | 'right';
@@ -258,7 +276,10 @@ function Dashboard() {
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const [previewStarted, setPreviewStarted] = useState(false);
   const [previewResetKey, setPreviewResetKey] = useState(0);
-  const [youtubeStatus, setYoutubeStatus] = useState<YouTubeStatus>({ connected: false });
+  const [youtubeStatus, setYoutubeStatus] = useState<YouTubeStatus>({
+    connected: false,
+    membership: { state: 'unknown' },
+  });
   const [youtubeMessage, setYoutubeMessage] = useState('');
   const [youtubeLoading, setYoutubeLoading] = useState(false);
 
@@ -275,9 +296,28 @@ function Dashboard() {
         if (!response.ok) throw new Error('Local API is not running.');
         return response.json() as Promise<YouTubeStatus>;
       })
-      .then(setYoutubeStatus)
+      .then((status) => {
+        setYoutubeStatus(status);
+        if (oauthResult !== 'error' && status.membership?.state === 'unavailable') {
+          setYoutubeMessage(membershipStatusMessage(status.membership));
+        }
+      })
       .catch(() => setYoutubeMessage('Start the local API to connect YouTube.'));
   }, []);
+
+  const markMembershipAvailable = () => {
+    setYoutubeStatus((current) => ({
+      ...current,
+      membership: { state: 'available' },
+    }));
+  };
+
+  const markMembershipUnavailable = (error: ApiError) => {
+    setYoutubeStatus((current) => ({
+      ...current,
+      membership: { state: 'unavailable', error },
+    }));
+  };
 
   const updateConfig = <Key extends keyof CreditsConfig>(
     key: Key,
@@ -317,9 +357,10 @@ function Dashboard() {
       const payload = (await response.json()) as {
         count?: number;
         members?: YouTubeMember[];
-        error?: { reason?: string; message?: string };
+        error?: ApiError;
       };
       if (!response.ok) {
+        markMembershipUnavailable(payload.error || { reason: 'api_error' });
         throw new Error(
           `${payload.error?.reason || 'api_error'}: ${payload.error?.message || ''}`,
         );
@@ -337,6 +378,7 @@ function Dashboard() {
       }));
       if (importedTiers.length)
         setConfig((current) => ({ ...current, tiers: importedTiers }));
+      markMembershipAvailable();
       setYoutubeMessage(`${payload.count || 0} members imported.`);
     } catch (error) {
       setYoutubeMessage(error instanceof Error ? error.message : 'Member sync failed.');
@@ -353,7 +395,8 @@ function Dashboard() {
         credentials: 'include',
       });
       if (!response.ok) {
-        const payload = (await response.json()) as { error?: { message?: string } };
+        const payload = (await response.json()) as { error?: ApiError };
+        markMembershipUnavailable(payload.error || { reason: 'api_error' });
         throw new Error(payload.error?.message || 'Roster export failed.');
       }
 
@@ -364,6 +407,7 @@ function Dashboard() {
       link.download = 'member-roster.txt';
       link.click();
       URL.revokeObjectURL(url);
+      markMembershipAvailable();
       setYoutubeMessage(
         'Roster downloaded. Load it from the native OBS source properties.',
       );
@@ -374,6 +418,12 @@ function Dashboard() {
     }
   };
 
+  const membershipState = youtubeStatus.membership?.state || 'unknown';
+  const connectionLabel =
+    membershipState === 'unavailable'
+      ? `Connected, Memberships unavailable`
+      : `Connected: ${youtubeStatus.channel?.title || 'YouTube'}`;
+
   return (
     <main className="dashboard">
       <header className="topbar">
@@ -382,9 +432,7 @@ function Dashboard() {
           Member Credits
         </a>
         <button className="youtube-connect" type="button" onClick={connectYouTube}>
-          {youtubeStatus.connected
-            ? `Connected: ${youtubeStatus.channel?.title || 'YouTube'}`
-            : 'Connect YouTube'}
+          {youtubeStatus.connected ? connectionLabel : 'Connect YouTube'}
         </button>
       </header>
 
@@ -589,7 +637,13 @@ function Dashboard() {
             <div className="tier-editor-title">
               <span>YouTube members</span>
               <small>
-                {youtubeStatus.connected ? 'Connected' : 'Manual data for now'}
+                {!youtubeStatus.connected
+                  ? 'Manual data for now'
+                  : membershipState === 'available'
+                    ? 'Membership access ready'
+                    : membershipState === 'unavailable'
+                      ? 'Membership access unavailable'
+                      : 'OAuth connected; membership not tested'}
               </small>
             </div>
             <p>{youtubeMessage || 'Connect your channel to test membership access.'}</p>
